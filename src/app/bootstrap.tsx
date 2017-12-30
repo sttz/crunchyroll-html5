@@ -6,6 +6,7 @@ import { h, render } from 'preact';
 import { PlaybackState, NextVideoEvent } from './media/player/IPlayerApi';
 import { VideoTracker } from './Tracking';
 import parse = require('url-parse');
+import { EventHandler } from './libs/events/EventHandler';
 
 const css = require('../styles/bootstrap.scss');
 
@@ -24,7 +25,9 @@ class Bootstrap {
   private _wrapper: Element;
   private _player: Player;
   private _tracking: VideoTracker|undefined = undefined;
+  private _handler: EventHandler = new EventHandler(this);
 
+  private _initialVideoDetail: IVideoDetail|undefined = undefined;
   private _currentVideoDetail: IVideoDetail|undefined = undefined;
 
   constructor() {
@@ -82,38 +85,36 @@ class Bootstrap {
     return url.replace(/_[a-zA-Z]+(\.[a-zA-Z]+)$/, "_full$1");
   }
 
-  async loadVideo(detail: IVideoDetail, remote: boolean = false) {
+  async loadVideo(detail: IVideoDetail, useCurrentDocument: boolean = true, startTime: number|undefined = undefined, quality: string|undefined = undefined, showLoadingThumbnail: boolean = true) {
     if (this._tracking) {
       this._tracking.dispose();
       this._tracking = undefined;
     }
     const player = this._player;
 
-    if (remote) {
-      this._currentVideoDetail = detail;
-    } else {
+    if (useCurrentDocument) {
       this._currentVideoDetail = undefined;
+    } else {
+      this._currentVideoDetail = detail;
     }
 
-    player.loadVideoByConfig({
-      thumbnailUrl: detail.thumbnailUrl.replace(/_[a-zA-Z]+(\.[a-zA-Z]+)$/, "_full$1")
-    });
+    if (showLoadingThumbnail) {
+      player.loadVideoByConfig({
+        thumbnailUrl: detail.thumbnailUrl.replace(/_[a-zA-Z]+(\.[a-zA-Z]+)$/, "_full$1")
+      });
+    }
 
     let video: Video;
 
-    if (remote) {
-      video = await Video.fromUrl(detail.url, true);
+    if (useCurrentDocument) {
+      video = await Video.fromDocument(detail.url, document, quality);
     } else {
-      video = await Video.fromDocument(detail.url, document, true);
+      video = await Video.fromUrl(detail.url, quality);
     }
     if (video.streams.length === 0) throw new Error("No stream found.");
     const stream = video.streams[0];
-    let startTime = stream.startTime;
-    if (!remote) {
-      const url = parse(detail.url, true);
-      if (url.query && url.query.hasOwnProperty('t')) {
-        startTime = parseFloat(url.query['t']!);
-      }
+    if (typeof startTime === 'undefined') {
+      startTime = stream.startTime;
     }
     this._tracking = new VideoTracker(stream, player.getApi());
 
@@ -136,6 +137,46 @@ class Bootstrap {
     }
 
     player.loadVideoByConfig(videoConfig);
+  }
+
+  async bindQualityChange() {
+    const qualityChangeButtons = document.querySelectorAll("a[token^=showmedia\\.]");
+
+    const setActiveQuality = (quality: string) => {
+      for (let i = 0; i < qualityChangeButtons.length; i++) {
+        const btn = qualityChangeButtons[i];
+        if (btn.getAttribute("href")!.indexOf("/freetrial") === 0)
+          continue;
+        const btnQuality = btn.getAttribute('token')!.substring(10);
+
+        if (btnQuality === quality) {
+          btn.classList.add('dark-button', 'selected');
+          btn.classList.remove('default-button');
+        } else {
+          btn.classList.add('default-button');
+          btn.classList.remove('dark-button', 'selected');
+        }
+      }
+    };
+
+    for (let i = 0; i < qualityChangeButtons.length; i++) {
+      const btn = qualityChangeButtons[i];
+      if (btn.getAttribute("href")!.indexOf("/freetrial") === 0)
+        continue;
+      const quality = btn.getAttribute('token')!.substring(10);
+      this._handler.listen(btn, 'click', (e: Event) => {
+        if (!this._initialVideoDetail) return;
+        if (this._currentVideoDetail) return;
+        if (!this._player) return;
+        const api = this._player.getApi();
+
+        e.preventDefault();
+
+        setActiveQuality(quality);
+
+        this.loadVideo(this._initialVideoDetail, true, api.getCurrentTime(), quality, false);
+      }, false);
+    }
   }
 
   async run() {
@@ -171,16 +212,27 @@ class Bootstrap {
         if (!api.isFullscreen()) return;
         e.preventDefault();
 
-        this.loadVideo(e.detail, true);
+        this.loadVideo(e.detail, false);
       }, false);
 
-      this.loadVideo({
+      // Get current time.
+      let startTime: number|undefined = undefined;
+      const url = parse(location.href, true);
+      if (url.query && url.query.hasOwnProperty('t')) {
+        startTime = parseFloat(url.query['t']!);
+      }
+
+      this._initialVideoDetail = {
         thumbnailUrl: Bootstrap.getVideoThumbnailUrl(videoId) || '',
         url: location.href
-      }, false);
+      };
+
+      this.loadVideo(this._initialVideoDetail, true, startTime);
     };
     const large = this._wrapper.id === "showmedia_video_box_wide";
     const onSizeChange = (large: boolean) => this._onSizeChange(large);
+
+    this.bindQualityChange();
 
     render((
       <Player

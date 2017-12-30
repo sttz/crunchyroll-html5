@@ -400,7 +400,19 @@ export class Video {
     return !!re.exec(url);
   }
 
-  static async fromDocument(url: string, doc: Document, onlyDefault: boolean = false): Promise<Video> {
+  static getDefaultQuality(doc: Document): string|undefined {
+    const fmtElements = doc.querySelectorAll("a[token^=showmedia\\.]");
+    for (let i = 0; i < fmtElements.length; i++) {
+      if (fmtElements[i].getAttribute("href")!.indexOf("/freetrial") === 0)
+        continue;
+      if (!fmtElements[i].classList.contains('dark-button'))
+        continue;
+      return fmtElements[i].getAttribute("token")!.substring(10);
+    }
+    return undefined;
+  }
+
+  static async fromDocument(url: string, doc: Document, quality: string|undefined = undefined): Promise<Video> {
     const { videoId } = Video.parseUrlFragments(url);
 
     /*var note = doc.querySelector(".showmedia-trailer-notice");
@@ -425,13 +437,11 @@ export class Video {
       .trim();
 
     const fmts: string[] = [];
-    const fmtElements = doc.querySelectorAll("a[token^=showmedia\\.]");
-    for (let i = 0; i < fmtElements.length; i++) {
-      if (fmtElements[i].getAttribute("href")!.indexOf("/freetrial") === 0)
-        continue;
-      if (onlyDefault && !fmtElements[i].classList.contains('dark-button'))
-        continue;
-      fmts.push(fmtElements[i].getAttribute("token")!.substring(10));
+    if (!quality) {
+      quality = Video.getDefaultQuality(doc);
+    }
+    if (quality) {
+      fmts.push(quality);
     }
 
     const streams: Stream[] = [];
@@ -465,7 +475,7 @@ export class Video {
     }
   }
 
-  static async fromUrl(url: string, onlyDefault: boolean = false): Promise<Video> {
+  static async fromUrl(url: string, quality: string|undefined = undefined): Promise<Video> {
     let { prefix, webpageUrl, videoId } = Video.parseUrlFragments(url);
 
     if (prefix === 'm') {
@@ -478,6 +488,10 @@ export class Video {
     const response = await request.get(webpageUrl);
     const doc = (new DOMParser()).parseFromString(response, "text/html");
 
-    return Video.fromDocument(url, doc, onlyDefault);
+    if (!quality) {
+      quality = Video.getDefaultQuality(doc);
+    }
+
+    return Video.fromDocument(url, doc, quality);
   }
 }
