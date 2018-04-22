@@ -1,0 +1,61 @@
+.trakt-icon {
+  background-image: url("data:image/svg+xml;base64,PHN2ZyBhcmlhLWxhYmVsbGVkYnk9InNpbXBsZWljb25zLXRyYWt0LWljb24iIHJvbGU9ImltZyIgdmlld0JveD0iMCAwIDI0IDI0IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxwYXRoIGZpbGw9InJlZCIgZD0iTTEyIDI0QzUuMzg1IDI0IDAgMTguNjE1IDAgMTJTNS4zODUgMCAxMiAwczEyIDUuMzg1IDEyIDEyLTUuMzg1IDEyLTEyIDEyem0wLTIyLjc4OUM2LjA1IDEuMjExIDEuMjExIDYuMDUgMS4yMTEgMTJTNi4wNSAyMi43OSAxMiAyMi43OSAyMi43OSAxNy45NSAyMi43OSAxMiAxNy45NSAxLjIxMSAxMiAxLjIxMXptLTcuMTEgMTcuMzJjMS43NTYgMS45MiA0LjI5NCAzLjExMyA3LjExIDMuMTEzIDEuNDM5IDAgMi44MDEtLjMxMyA0LjAyNy0uODc2bC02LjY5Ny02LjY4LTQuNDQgNC40NDN6bTE0LjI4OC0uMDY3YzEuNTQxLTEuNzEgMi40ODQtMy45OSAyLjQ4NC02LjQ2NiAwLTMuODg1LTIuMjg3LTcuMjE1LTUuNTY4LTguNzZsLTYuMDg5IDYuMDc2IDkuMTY0IDkuMTVoLjAwOXptLTkuODc3LTguNDI5TDQuMjI3IDE1LjA5bC0uNjc5LS42OCA1LjMzNy01LjMzNiA2LjIzLTYuMjI1Yy0uOTc4LS4zMjgtMi4wMi0uNTA5LTMuMTE1LS41MDlDNi42NjMgMi4zMzcgMi4zMzcgNi42NjMgMi4zMzcgMTJjMCAyLjE3Mi43MTMgNC4xNzggMS45MzkgNS44MDFsNS4wNTYtNS4wNTUuMzU5LjMyOSA3LjI0NSA3LjI0NWMuMTUtLjA4Mi4yODUtLjE2NC40Mi0uMjY2TDkuMzMgMTIuMDVsLTQuODU0IDQuODU1LS42NzktLjY3OSA1LjUzNS01LjUzNS4zNTkuMzMxIDguNDYgOC40MzdjLjEzNS0uMS4yNTUtLjIxNS4zNzUtLjMxNkw5LjM5IDEwLjAyN2wtLjA4My4wMTUtLjAwNi0uMDA3em0zLjA0NyAxLjAyOGwtLjY3OC0uNjc2IDQuNzg4LTQuNzkuNjc5LjY4OS00Ljc4OSA0Ljc4NXYtLjAwOHptNC41NDItNi41NzhsLTUuNTIgNS41Mi0uNjgtLjY3OSA1LjUyMS01LjUyLjY3OS42ODR2LS4wMDV6Ii8+PC9zdmc+");
+  background-repeat: no-repeat;
+}
+
+#trakt-button {
+  background-color: black;
+  border: 1px solid #222;
+  border-radius: 5px;
+  padding: 2px 7px;
+  color: white;
+  font-size: 11px;
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+
+  &:hover {
+    background-color: #444;
+  }
+
+  .trakt-icon {
+    height: 14px;
+    width: 14px;
+    margin-right: 5px;
+  }
+
+  svg {
+    color: red;
+    fill: currentColor;
+    height: 14px;
+    margin-right: 5px;
+  }
+}
+
+.html5-video-chrome-trakt {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0,0,0,.5);
+  padding: 10px 15px;
+  border-radius: 30px;
+
+  .trakt-icon {
+    height: 14px;
+    width: 14px;
+    margin-right: 5px;
+  }
+}
+
+.html5-video-player--autohide .html5-video-chrome-trakt {
+  opacity: 0;
+  -moz-transition: opacity .1s cubic-bezier(0.4,0.0,1,1);
+  -webkit-transition: opacity .1s cubic-bezier(0.4,0.0,1,1);
+  transition: opacity .1s cubic-bezier(0.4,0.0,1,1);
+}
