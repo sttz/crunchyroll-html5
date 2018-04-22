@@ -1,10 +1,13 @@
 import { IPlayerApi, TimeUpdateEvent, SeekEvent, PlaybackStateChangeEvent, PlaybackState } from "../media/player/IPlayerApi";
 import { EventHandler } from "../libs/events/EventHandler";
-import { trackProgress } from "./crunchyroll";
+import { trackProgress } from "../player/crunchyroll";
 import { Disposable } from "../libs/disposable/Disposable";
 import { IMedia } from "crunchyroll-lib/models/IMedia";
+import { IPlugin } from "./IPlugin";
+import { injectable } from "inversify";
 
-export class VideoTracker extends Disposable {
+@injectable()
+export class CrunchyrollTrackerPlugin implements IPlugin {
   private _handler: EventHandler = new EventHandler(this);
 
   private _media: IMedia;
@@ -15,9 +18,11 @@ export class VideoTracker extends Disposable {
   private _intervals: number[];
   private _callCount: number = 0;
 
-  constructor(media: IMedia, api: IPlayerApi) {
-    super();
+  bootstrap(url: string, mediaId: number): void {
+    // NOP
+  }
 
+  load(media: IMedia, api: IPlayerApi): void {
     this._media = media;
     this._api = api;
     this._intervals = media.getPingIntervals();
@@ -28,10 +33,8 @@ export class VideoTracker extends Disposable {
       .listen(api, 'timeupdate', this._onTimeUpdate, false);
   }
 
-  protected disposeInternal() {
-    super.disposeInternal();
-
-    this._handler.dispose();
+  unload(): void {
+    this._handler.removeAll();
   }
 
   private _track(time: number, interval: number) {

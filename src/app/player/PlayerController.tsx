@@ -5,7 +5,6 @@ import { NextVideo } from '../media/nextvideo';
 import { NextVideoEvent, PlaybackState, VolumeChangeEvent } from '../media/player/IPlayerApi';
 import parse = require('url-parse');
 import { IMedia } from 'crunchyroll-lib/models/IMedia';
-import { VideoTracker } from './Tracking';
 import { getCollectionCarouselDetail, getMediaMetadataFromDOM } from '../media/CollectionCarouselParser';
 import { getCollectionCarouselPage, ICollectionCarouselPage } from './crunchyroll';
 import container from "../../config/inversify.config";
@@ -44,8 +43,6 @@ export class PlayerController {
 
   private _player?: Player;
   private _changedMedia: boolean = false;
-
-  private _tracking?: VideoTracker;
 
   private _cachedCarouselPage?: ICollectionCarouselPage;
 
@@ -119,10 +116,6 @@ export class PlayerController {
 
   private async _loadMedia(media: IMedia): Promise<void> {
     if (!this._player) return;
-    if (this._tracking) {
-      this._tracking.dispose();
-      this._tracking = undefined;
-    }
     
     container.getAll<IPlugin>(IPluginSymbol).forEach(p => p.unload());
 
@@ -181,7 +174,6 @@ export class PlayerController {
       }
     }
 
-    this._tracking = new VideoTracker(media, this._player.getApi());
     const playerApi = this._player.getApi();
     container.getAll<IPlugin>(IPluginSymbol).forEach(p => p.load(media, playerApi));
 
@@ -206,11 +198,6 @@ export class PlayerController {
     this._changedMedia = true;
     this._autoPlay = true;
     this._startTime = undefined;
-
-    if (this._tracking) {
-      this._tracking.dispose();
-      this._tracking = undefined;
-    }
 
     this._player.loadVideoByConfig({
       thumbnailUrl: detail.thumbnailUrl
