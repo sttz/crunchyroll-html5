@@ -10,6 +10,7 @@ import { getCollectionCarouselDetail, getMediaMetadataFromDOM } from '../media/C
 import { getCollectionCarouselPage, ICollectionCarouselPage } from './crunchyroll';
 import container from "../../config/inversify.config";
 import { IStorageSymbol, IStorage } from '../storage/IStorage';
+import { IPlugin, IPluginSymbol } from '../plugins/IPlugin';
 
 export interface IPlayerControllerOptions {
   quality?: keyof Formats;
@@ -122,6 +123,8 @@ export class PlayerController {
       this._tracking.dispose();
       this._tracking = undefined;
     }
+    
+    container.getAll<IPlugin>(IPluginSymbol).forEach(p => p.unload());
 
     const metadata = media.getMetadata();
     const stream = media.getStream();
@@ -179,6 +182,8 @@ export class PlayerController {
     }
 
     this._tracking = new VideoTracker(media, this._player.getApi());
+    const playerApi = this._player.getApi();
+    container.getAll<IPlugin>(IPluginSymbol).forEach(p => p.load(media, playerApi));
 
     if (videoConfig.autoplay) {
       this._player.loadVideoByConfig(videoConfig);

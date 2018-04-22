@@ -4,9 +4,10 @@ import { PlayerController, IPlayerControllerOptions } from './player/PlayerContr
 import { getMediaId, getSelectedQuality, getStartTime, getAutoPlay } from './player/StandardPlayer';
 import { parseUrlFragments } from './player/AffiliatePlayer';
 import { Formats, FORMAT_IDS } from 'crunchyroll-lib/media';
-import container from 'crunchyroll-lib/config';
+import container from '../config/inversify.config';
 import { BackgroundHttpClient } from './http/BackgroundHttpClient';
 import { bindCrossHttpClientAsDefault } from './config';
+import { IPlugin, IPluginSymbol } from './plugins/IPlugin';
 
 const css = require('../styles/bootstrap.scss');
 
@@ -32,6 +33,8 @@ function _run() {
     sizeEnabled: true,
     autoPlay: true
   } as IPlayerControllerOptions;
+
+  container.getAll<IPlugin>(IPluginSymbol).forEach(p => p.bootstrap(url, mediaId));
 
   if (mediaId) {
     const quality = getSelectedQuality();
