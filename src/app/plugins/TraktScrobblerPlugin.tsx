@@ -1,53 +1,19 @@
-import libContainer from 'crunchyroll-lib/config';
 import { IMedia } from "crunchyroll-lib/models/IMedia";
 import { IMediaMetadata } from "crunchyroll-lib/models/IMediaMetadata";
-import { IHttpClient } from 'crunchyroll-lib/models/http/IHttpClient';
 import { inject, injectable } from "inversify";
+import { h, render } from 'preact';
 import * as parseUrl from 'url-parse';
-import container from "../../config/inversify.config";
 import { EventHandler } from "../libs/events/EventHandler";
 import { IPlayerApi, PlaybackState, PlaybackStateChangeEvent } from "../media/player/IPlayerApi";
-import { IStorage, IStorageSymbol } from '../storage/IStorage';
-import { IPlugin } from "./IPlugin";
 import { importCSS } from '../utils/css';
-import { h, render } from 'preact';
+import { IPlugin } from "./IPlugin";
+import TraktApi, { AuthenticationChangeEvent, ITraktApiOptions, ITraktScrobbleData } from './TraktApi';
 
 const packageInfo = require('../../../package.json');
 const css = require('./TraktScrobblerPlugin.scss');
 
 const EpisodeRegex = /Episode (\d+)/;
 const SeasonRegex = /Season (\d+)/;
-
-const TraktTokensKey: string = 'trakt_tokens';
-
-interface IQueryAuthenticationResult {
-  code?: string;
-  state?: string;
-}
-
-interface ITraktScrobbleData {
-  movie?: {
-    title: string;
-  };
-  show?: {
-    title: string;
-  };
-  episode?: {
-    season: number;
-    number: number;
-    tilte: string;
-  };
-  progress: number;
-  app_version: string;
-  app_date: string;
-}
-
-interface ITraktTokens {
-  refresh_token?: string;
-  access_token?: string;
-  expires?: number;
-  authentication_state?: string;
-}
 
 enum ScrobbleState {
   Idle,
@@ -57,10 +23,8 @@ enum ScrobbleState {
   Error
 }
 
-export interface ITraktOptions {
-  client_id: string;
-  client_secret: string;
-  api_url?: string;
+export interface ITraktOptions extends ITraktApiOptions {
+  //
 }
 
 export const ITraktOptionsSymbols = Symbol.for("ITraktOptions");
@@ -69,29 +33,26 @@ export const ITraktOptionsSymbols = Symbol.for("ITraktOptions");
 export default class TraktScrobblerPlugin implements IPlugin {
   private _handler: EventHandler = new EventHandler(this);
 
+  private _client: TraktApi;
+
   private _media?: IMedia;
   private _api?: IPlayerApi;
-  private _http: IHttpClient;
-  private _storage: IStorage;
 
   private _traktButton: Element;
   private _statusIcon: Element;
-  private _tokens: ITraktTokens = {};
   private _state: ScrobbleState = ScrobbleState.Idle;
 
-  private _client_id: string;
-  private _client_secret: string;
-  private _redirect_uri: string;
-  private _endpoint: string;
-
   constructor(@inject(ITraktOptionsSymbols) options: ITraktOptions) {
-    this._client_id = options.client_id;
-    this._client_secret = options.client_secret;
-    this._redirect_uri = 'https://www.crunchyroll.com';
-    this._endpoint = options.api_url || 'https://api.trakt.tv';
+    this._client = new TraktApi(options);
+    this._handler
+      .listen(this._client, 'authenticationchange', this._onAuthenticationChange, false);
+  }
 
-    this._http = libContainer.get<IHttpClient>("IHttpClient");
-    this._storage = container.get<IStorage>(IStorageSymbol);
+  private _onAuthenticationChange(e: AuthenticationChangeEvent) {
+    if (!e.isAuthenticated) {
+      this._client.checkAuthenticationResult(window.location.href);
+    }
+    this._updateButton();
   }
 
   // ------ IPlugin ------
@@ -103,7 +64,7 @@ export default class TraktScrobblerPlugin implements IPlugin {
   }
 
   load(media: IMedia, api: IPlayerApi): void {
-    if (!this._isAuthenticated()) return;
+    if (!this._client.isAuthenticated()) return;
 
     this._media = media;
     this._api = api;
@@ -132,23 +93,18 @@ export default class TraktScrobblerPlugin implements IPlugin {
     this._handler.removeAll();
   }
 
+  // ------ UI ------
+
   private async _bootstrap(url: string): Promise<void> {
     importCSS(css);
-
-    const authenticated = await this._loadTokens();
-    if (authenticated) {
-      console.log('Loaded saved trakt token.');
-    } else {
-      this._checkAuthenticationResult(url);
-    }
 
     let footer = document.querySelector('#social_media');
     if (footer) {
       let onclick = () => {
-        if (this._isAuthenticated()) {
-          this._disconnect();
+        if (this._client.isAuthenticated()) {
+          this._client.disconnect();
         } else {
-          this._authenticate();
+          this._client.authenticate();
         }
       };
       this._traktButton = render(
@@ -166,63 +122,12 @@ export default class TraktScrobblerPlugin implements IPlugin {
 
   private _updateButton(): void {
     if (!this._traktButton) return;
-    this._traktButton.getElementsByClassName('text')[0].textContent = !this._isAuthenticated() ? 'Connect with Trakt' : 'Disconnect from Trakt';
+    this._traktButton.getElementsByClassName('text')[0].textContent = !this._client.isAuthenticated() ? 'Connect with Trakt' : 'Disconnect from Trakt';
   }
 
   private _updateStatusIcon(text?: string): void {
     if (!this._statusIcon) return;
     this._statusIcon.getElementsByClassName('text')[0].textContent = text || ScrobbleState[this._state];
-  }
-
-  // ------ Authentication ------
-
-  private async _loadTokens(): Promise<boolean> {
-    this._tokens = await this._storage.get<ITraktTokens>(TraktTokensKey) || {};
-
-    if (this._tokens.expires && this._tokens.expires < Date.now()) {
-      this._tokens = await this._refresh_token();
-      await this._storage.set<ITraktTokens>(TraktTokensKey, this._tokens);
-    }
-
-    return this._isAuthenticated();
-  }
-
-  private _isAuthenticated(): boolean {
-    return this._tokens.access_token !== undefined;
-  }
-
-  private async _authenticate(): Promise<void> {
-    const state = this._generate_state();
-    const url = this._get_url(state);
-
-    // Save authentication state data
-    this._tokens.authentication_state = state;
-    await this._storage.set<ITraktTokens>(TraktTokensKey, this._tokens);
-
-    window.location.href = url;
-  }
-
-  private async _checkAuthenticationResult(url: string): Promise<void> {
-    const query = parseUrl(url, true).query as IQueryAuthenticationResult;
-    if (!query.code || !query.state) return;
-
-    if (!await this._exchange_code(query.code, query.state)) {
-      console.error('Exchanging oauth code failed!');
-      return;
-    }
-
-    console.log('Trakt authentication successful!');
-
-    this._storage.set<ITraktTokens>(TraktTokensKey, this._tokens);
-
-    window.history.replaceState(null, undefined, window.location.pathname);
-    this._updateButton();
-  }
-
-  private _disconnect(): void {
-    this._storage.set<ITraktTokens>(TraktTokensKey, {});
-    this._updateButton();
-    this._revoke_token();
   }
 
   // ------ Scrobbling ------
@@ -280,7 +185,7 @@ export default class TraktScrobblerPlugin implements IPlugin {
       data.episode = {
         season: seasonNumber,
         number: episodeNumber,
-        tilte: metadata.getEpisodeTitle()
+        title: metadata.getEpisodeTitle()
       };
     }
 
@@ -302,8 +207,8 @@ export default class TraktScrobblerPlugin implements IPlugin {
     if (!type) return;
 
     const data = this._getScrobbleData(this._media!, this._api!);
-    const response = await this._scrobble(type, data);
-    if (response.error) {
+    const response = await this._client.scrobble(type, data);
+    if (TraktApi.isError(response)) {
       if (response.status === 409) {
         // Item was just scrobbled
         this._state = ScrobbleState.Scrobbled;
@@ -332,114 +237,6 @@ export default class TraktScrobblerPlugin implements IPlugin {
           break;
       }
       this._updateStatusIcon();
-    }
-  }
-
-  // ------ API ------
-
-  private async _exchange(body: object): Promise<ITraktTokens> {
-    try {
-      const response = await this._http.post(
-        `${this._endpoint}/oauth/token`, 
-        JSON.stringify(body), 
-        { headers: { 'Content-Type': 'application/json' } }
-      );
-      
-      const data = JSON.parse(response.body);
-      return {
-        access_token: data.access_token,
-        refresh_token: data.refresh_token,
-        expires: (data.created_at + data.expires_in) * 1000
-      };
-    } catch (error) {
-      console.error(error);
-      return {};
-    }
-  }
-
-  private _generate_state(): string {
-    let data = new Uint32Array(4);
-    crypto.getRandomValues(data);
-    let state = '';
-    for (let i = 0; i < data.length; i++) {
-      state += data[i].toString(16);
-    }
-    return state;
-  }
-
-  private _get_url(state: string): string {
-     // Replace 'api' from the api_url to get the top level trakt domain
-     const base_url = this._endpoint.replace(/api\W/, '');
-     return `${base_url}/oauth/authorize?response_type=code&client_id=${this._client_id}&redirect_uri=${this._redirect_uri}&state=${state}`;
-  }
-
-  private async _exchange_code(code: string, state: string): Promise<boolean> {
-    if (state !== this._tokens.authentication_state) {
-      console.error('Invalid CSRF (State)');
-      return false;
-    }
-
-    this._tokens = await this._exchange({
-      code: code,
-      client_id: this._client_id,
-      client_secret: this._client_secret,
-      redirect_uri: this._redirect_uri,
-      grant_type: 'authorization_code'
-    });
-    return this._isAuthenticated();
-  }
-
-  private async _refresh_token(): Promise<ITraktTokens> {
-    if (!this._tokens.refresh_token)
-      return {};
-
-    return await this._exchange({
-      refresh_token: this._tokens.refresh_token,
-      client_id: this._client_id,
-      client_secret: this._client_secret,
-      redirect_uri: this._redirect_uri,
-      grant_type: 'refresh_token'
-    });
-  }
-
-  private _trakt_headers(contentType?: string): { [key: string]: string } {
-    return {
-      'Content-Type': contentType || 'application/json',
-      'Authorization' : `Bearer ${this._tokens.access_token}`,
-      'trakt-api-version': '2',
-      'trakt-api-key': this._client_id
-    };
-  }
-
-  private async _revoke_token(): Promise<void> {
-    if (!this._tokens.access_token) return;
-
-    await this._http.post(
-      `${this._endpoint}/oauth/revoke`, 
-      { token: this._tokens.access_token }, 
-      { headers: this._trakt_headers('application/x-www-form-urlencoded') }
-    );
-  }
-
-  private async _scrobble(type: string, data: ITraktScrobbleData): Promise<any> {
-    if (!this._tokens.access_token) {
-      throw new Error('Acess token required.');
-    }
-
-    try {
-      const response = await this._http.post(
-        `${this._endpoint}/scrobble/${type}`, 
-        JSON.stringify(data), 
-        { headers: this._trakt_headers() }
-      );
-
-      return JSON.parse(response.body);
-    } catch (error) {
-      if (error.status) {
-        return { error: `Server returned status: ${error.status}`, status: error.status };
-      } else {
-        return { error: `Unknown communication error` }
-      }
     }
   }
 }
