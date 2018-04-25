@@ -57,6 +57,9 @@ export interface ITraktScrobbleData {
 export interface ITraktScobbleResult {
   id: number;
   action: 'start' | 'pause' | 'scrobble';
+  movie?: ITraktMovie;
+  show?: ITraktShow;
+  episode?: ITraktEpisode;
 }
 
 export class AuthenticationChangeEvent extends Event {

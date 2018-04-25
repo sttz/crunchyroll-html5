@@ -42,7 +42,7 @@ export default class TraktScrobblerPlugin implements IPlugin {
   private _api?: IPlayerApi;
 
   private _traktButton: Element;
-  private _statusIcon: Element;
+  private _statusButton: Element;
   private _state: ScrobbleState = ScrobbleState.Idle;
   private _error?: string;
   private _data?: ITraktScrobbleData;
@@ -66,7 +66,7 @@ export default class TraktScrobblerPlugin implements IPlugin {
 
   private set scrobbleState(value: ScrobbleState) {
     this._state = value;
-    this._updateStatusIcon();
+    this._updateStatusButton();
   }
 
   // ------ IPlugin ------
@@ -86,16 +86,17 @@ export default class TraktScrobblerPlugin implements IPlugin {
     this._handler
       .listen(api, 'playbackstatechange', this._onPlaybackStateChange, false);
     
-    if (this._statusIcon == null) {
-      let player = document.querySelector('.html5-video-player');
-      if (player) {
-        this._statusIcon = render((
-          <div class="html5-video-chrome-trakt">
-            <div class="trakt-icon"></div>
-            <div class="text"></div>
-          </div>
-        ), player);
-        this._updateStatusIcon();
+    if (this._statusButton == null) {
+      let container = document.querySelector('.chrome-controls__right');
+      if (container) {
+        this._statusButton = render((
+          <button class="chrome-button chrome-trakt-button" onClick={ () => this._onStatusButtonClick() }>
+            <div class="trakt-icon"/>
+          </button>
+        ), container);
+        this._statusButton.remove();
+        container.insertBefore(this._statusButton, container.firstChild);
+        this._updateStatusButton();
       }
     }
   }
@@ -105,6 +106,10 @@ export default class TraktScrobblerPlugin implements IPlugin {
     this._api = undefined;
 
     this._handler.removeAll();
+
+    this.scrobbleState = ScrobbleState.Idle;
+    this._data = undefined;
+    this._error = undefined;
   }
 
   // ------ UI ------
@@ -139,9 +144,36 @@ export default class TraktScrobblerPlugin implements IPlugin {
     this._traktButton.getElementsByClassName('text')[0].textContent = !this._client.isAuthenticated() ? 'Connect with Trakt' : 'Disconnect from Trakt';
   }
 
-  private _updateStatusIcon(): void {
-    if (!this._statusIcon) return;
-    this._statusIcon.getElementsByClassName('text')[0].textContent = this._error || ScrobbleState[this.scrobbleState];
+  private _updateStatusButton(): void {
+    if (!this._statusButton) return;
+
+    let classList = this._statusButton.classList;
+    let toRemove = [];
+    for (let i = 0; i < classList.length; i++) {
+      let item = classList.item(i)!;
+      if (item.startsWith('state-')) toRemove.push(item);
+    }
+    classList.remove(...toRemove);
+    classList.add('state-' + ScrobbleState[this.scrobbleState].toLowerCase());
+
+    this._statusButton.setAttribute('title', this._error || ScrobbleState[this.scrobbleState]);
+  }
+
+  private _onStatusButtonClick(): void {
+    if (!this._data) return;
+
+    let url = 'https://trakt.tv/';
+    if (this._data.movie !== undefined) {
+      url += `movies/${this._data.movie.ids!.slug}`;
+    } else if (this._data.show !== undefined && this._data.episode !== undefined) {
+      const show = this._data.show;
+      const episode = this._data.episode;
+      url += `shows/${show.ids!.slug}/seasons/${episode.season}/episodes/${episode.number}`;
+    } else {
+      return;
+    }
+
+    window.open(url, '_blank');
   }
 
   // ------ Scrobbling ------
@@ -212,6 +244,7 @@ export default class TraktScrobblerPlugin implements IPlugin {
 
   private _handleApiError(response: ITraktError): void {
     console.error(`trakt scrobbler: ${response.error}`);
+    this._error = response.error;
     this.scrobbleState = ScrobbleState.Error;
   }
 
@@ -240,6 +273,9 @@ export default class TraktScrobblerPlugin implements IPlugin {
     let scrobbleResponse = await this._client.scrobble('start', this._data);
     if (!TraktApi.isError(scrobbleResponse)) {
       this.scrobbleState = ScrobbleState.Started;
+      if (scrobbleResponse.movie !== undefined) this._data.movie = scrobbleResponse.movie;
+      if (scrobbleResponse.show !== undefined) this._data.show = scrobbleResponse.show;
+      if (scrobbleResponse.episode !== undefined) this._data.episode = scrobbleResponse.episode;
       return;
     } else if (scrobbleResponse.status !== 404) {
       this._handleApiError(scrobbleResponse);
