@@ -7,7 +7,8 @@ import { EventHandler } from "../libs/events/EventHandler";
 import { IPlayerApi, PlaybackState, PlaybackStateChangeEvent } from "../media/player/IPlayerApi";
 import { importCSS } from '../utils/css';
 import { IPlugin } from "./IPlugin";
-import TraktApi, { AuthenticationChangeEvent, ITraktApiOptions, ITraktScrobbleData } from './TraktApi';
+import TraktApi, { AuthenticationChangeEvent, ITraktApiOptions, ITraktScrobbleData, ITraktError, ITraktMovie, ITraktShow } from './TraktApi';
+import { IResponse } from "crunchyroll-lib/models/http/IResponse";
 
 const packageInfo = require('../../../package.json');
 const css = require('./TraktScrobblerPlugin.scss');
@@ -17,9 +18,11 @@ const SeasonRegex = /Season (\d+)/;
 
 enum ScrobbleState {
   Idle,
+  Loading,
   Started,
   Paused,
   Scrobbled,
+  NotFound,
   Error
 }
 
@@ -41,6 +44,8 @@ export default class TraktScrobblerPlugin implements IPlugin {
   private _traktButton: Element;
   private _statusIcon: Element;
   private _state: ScrobbleState = ScrobbleState.Idle;
+  private _error?: string;
+  private _data?: ITraktScrobbleData;
 
   constructor(@inject(ITraktOptionsSymbols) options: ITraktOptions) {
     this._client = new TraktApi(options);
@@ -53,6 +58,15 @@ export default class TraktScrobblerPlugin implements IPlugin {
       this._client.checkAuthenticationResult(window.location.href);
     }
     this._updateButton();
+  }
+
+  private get scrobbleState(): ScrobbleState {
+    return this._state;
+  }
+
+  private set scrobbleState(value: ScrobbleState) {
+    this._state = value;
+    this._updateStatusIcon();
   }
 
   // ------ IPlugin ------
@@ -125,9 +139,9 @@ export default class TraktScrobblerPlugin implements IPlugin {
     this._traktButton.getElementsByClassName('text')[0].textContent = !this._client.isAuthenticated() ? 'Connect with Trakt' : 'Disconnect from Trakt';
   }
 
-  private _updateStatusIcon(text?: string): void {
+  private _updateStatusIcon(): void {
     if (!this._statusIcon) return;
-    this._statusIcon.getElementsByClassName('text')[0].textContent = text || ScrobbleState[this._state];
+    this._statusIcon.getElementsByClassName('text')[0].textContent = this._error || ScrobbleState[this.scrobbleState];
   }
 
   // ------ Scrobbling ------
@@ -193,50 +207,167 @@ export default class TraktScrobblerPlugin implements IPlugin {
   }
 
   private async _onPlaybackStateChange(e: PlaybackStateChangeEvent): Promise<void> {
-    if (this._state === ScrobbleState.Error || this._state === ScrobbleState.Scrobbled) return;
+    this._scrobble(e.state);
+  }
 
-    let type = null;
-    if (e.state === PlaybackState.PLAYING && this._state !== ScrobbleState.Started) {
-      type = 'start';
-    } else if (e.state === PlaybackState.PAUSED && this._state !== ScrobbleState.Paused) {
-      type = 'pause';
-    } else if (e.state === PlaybackState.ENDED) {
-      type = 'stop';
+  private _handleApiError(response: ITraktError): void {
+    console.error(`trakt scrobbler: ${response.error}`);
+    this.scrobbleState = ScrobbleState.Error;
+  }
+
+  private async _scrobble(playbackState: PlaybackState): Promise<void> {
+    if (this.scrobbleState === ScrobbleState.Error 
+        || this.scrobbleState === ScrobbleState.NotFound
+        || this.scrobbleState === ScrobbleState.Scrobbled
+        || this.scrobbleState === ScrobbleState.Loading)
+      return;
+
+    if (this.scrobbleState === ScrobbleState.Idle) {
+      await this._startScrobble(playbackState);
+    } else {
+      await this._updateScrobble(playbackState);
+    }
+  }
+
+  private async _startScrobble(playbackState: PlaybackState): Promise<void> {
+    if (playbackState !== PlaybackState.PLAYING)
+      return;
+
+    this.scrobbleState = ScrobbleState.Loading;
+
+    // Try to do automatic episode matching
+    this._data = this._getScrobbleData(this._media!, this._api!);
+    let scrobbleResponse = await this._client.scrobble('start', this._data);
+    if (!TraktApi.isError(scrobbleResponse)) {
+      this.scrobbleState = ScrobbleState.Started;
+      return;
+    } else if (scrobbleResponse.status !== 404) {
+      this._handleApiError(scrobbleResponse);
+      return;
     }
 
-    if (!type) return;
+    // Fall back to a manual lookup
+    let type, title;
+    if (this._data.movie !== undefined) {
+      type = 'movie';
+      title = this._data.movie.title;
+    } else {
+      type = 'show';
+      title = this._data.show!.title;
+    }
+    if (!title) {
+      console.error('trakt scrobbler: No title set');
+      return;
+    }
+    const searchResponse = await this._client.search(type, title);
+    if (TraktApi.isError(searchResponse)) {
+      this._handleApiError(searchResponse);
+      return;
+    }
 
-    const data = this._getScrobbleData(this._media!, this._api!);
-    const response = await this._client.scrobble(type, data);
+    let continueWith: ITraktMovie | ITraktShow | undefined;
+    const perfectMatches = searchResponse.filter(r => r.score === 1000);
+    if (perfectMatches.length === 1) {
+      continueWith = perfectMatches[0].movie || perfectMatches[0].show;
+    } else {
+      console.error('trakt scrobbler: manual lookup produced ambiguous result', searchResponse);
+      this.scrobbleState = ScrobbleState.NotFound;
+      return;
+    }
+
+    if (type === 'movie') {
+      // Found movie!
+      this._data.movie! = continueWith as ITraktMovie;
+    } else {
+      // Found show, now searching episode...
+      this._data.show = continueWith as ITraktShow;
+
+      const showId = this._data.show!.ids!.trakt!;
+      const seasonResponse = await this._client.season(showId, this._data.episode!.season!, true);
+      if (TraktApi.isError(seasonResponse)) {
+        if (seasonResponse.status === 404) {
+          console.error('trakt scrobbler: manual lookup could not find season');
+          this.scrobbleState = ScrobbleState.NotFound;
+        } else {
+          this._handleApiError(seasonResponse);
+        }
+        return;
+      }
+
+      const episodeNumber = this._data.episode!.number!;
+      let numberMatch = seasonResponse.filter(e => e.number === episodeNumber);
+      if (numberMatch.length > 1) {
+        console.error(`trakt scrobbler: got multiple episode #${episodeNumber} in season`, seasonResponse);
+        this.scrobbleState = ScrobbleState.Error;
+        return;
+      } else if (numberMatch.length === 1) {
+        // Found episode!
+        this._data.episode = numberMatch[0];
+      } else {
+        numberMatch = seasonResponse.filter(e => e.number_abs === episodeNumber);
+        if (numberMatch.length > 1) {
+          console.error(`trakt scrobbler: got multiple episode #${episodeNumber} (abs) in season`, seasonResponse);
+          this.scrobbleState = ScrobbleState.Error;
+          return;
+        } else if (numberMatch.length === 1) {
+          // Found episode!
+          this._data.episode = numberMatch[0];
+        } else {
+          console.error(`trakt scrobbler: episode not found in season`, seasonResponse);
+          this.scrobbleState = ScrobbleState.NotFound;
+          return;
+        }
+      }
+    }
+
+    // Retry scrobble
+    scrobbleResponse = await this._client.scrobble('start', this._data);
+    if (!TraktApi.isError(scrobbleResponse)) {
+      this.scrobbleState = ScrobbleState.Started;
+    } else if (scrobbleResponse.status === 404) {
+      console.error(`trakt scrobbler: ${type} not found even with manual lookup`, this._data);
+      this.scrobbleState = ScrobbleState.NotFound;
+    } else {
+      this._handleApiError(scrobbleResponse);
+    }
+  }
+
+  private async _updateScrobble(playbackState: PlaybackState): Promise<void> {
+    if (!this._data) {
+      throw new Error('trakt scrobbler: Scrobble data not set.');
+    }
+
+    let action;
+    if (playbackState === PlaybackState.PAUSED) {
+      if (this.scrobbleState !== ScrobbleState.Paused)
+        action = 'pause';
+    } else if (playbackState === PlaybackState.PLAYING) {
+      if (this.scrobbleState !== ScrobbleState.Started)
+        action = 'start';
+    } else if (playbackState === PlaybackState.ENDED) {
+      action = 'stop';
+    }
+    if (!action) return;
+
+    const response = await this._client.scrobble(action, this._data);
     if (TraktApi.isError(response)) {
       if (response.status === 409) {
         // Item was just scrobbled
-        this._state = ScrobbleState.Scrobbled;
-        this._updateStatusIcon();
-      } else if (response.status === 404) {
-        this._state = ScrobbleState.Error;
-        this._updateStatusIcon('Not Found');
+        this.scrobbleState = ScrobbleState.Scrobbled;
       } else {
-        this._state = ScrobbleState.Error;
-        this._updateStatusIcon();
-        console.error('Scrobbling failed with error: ' + response.error);
+        this._handleApiError(response);
       }
     } else {
-      switch (response.action) {
-        case 'start':
-          this._state = ScrobbleState.Started;
-          break;
-        case 'pause':
-          this._state = ScrobbleState.Paused;
-          break;
-        case 'scrobble':
-          this._state = ScrobbleState.Scrobbled;
-          break;
-        default:
-          console.error('Default or missing action in scrobble response: ' + response.action);
-          break;
+      if (response.action === 'start') {
+        this.scrobbleState = ScrobbleState.Started;
+      } else if (response.action === 'pause') {
+        this.scrobbleState = ScrobbleState.Paused;
+      } else if (response.action === 'scrobble') {
+        this.scrobbleState = ScrobbleState.Scrobbled;
+      } else {
+        console.error(`trakt scrobbler: Unknown scrobble action "${response.action}"`);
+        this.scrobbleState = ScrobbleState.Error;
       }
-      this._updateStatusIcon();
     }
   }
 }

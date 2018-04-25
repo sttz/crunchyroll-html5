@@ -33,6 +33,7 @@ export interface ITraktEpisode {
   season?: number;
   number?: number;
   title?: string;
+  number_abs?: number;
   ids?: ITraktIDs;
 }
 
@@ -294,6 +295,20 @@ export default class TraktApi extends EventTarget {
       );
 
       var data = JSON.parse(response.body) as Array<ITraktSearchResult>;
+      return data;
+    } catch (error) {
+      return this._getError(error);
+    }
+  }
+
+  async season(showId: number | string, season: number, extended?: boolean): Promise<Array<ITraktEpisode> | ITraktError> {
+    try {
+      const response = await this._http.get(
+        `${this._endpoint}/shows/${showId}/seasons/${season}?extended=${extended ? 'full' : ''}`,
+        { headers: this._trakt_headers() }
+      );
+
+      var data = JSON.parse(response.body) as Array<ITraktEpisode>;
       return data;
     } catch (error) {
       return this._getError(error);
