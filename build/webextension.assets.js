@@ -22,6 +22,12 @@ const generateManifest = () => {
       '96': 'assets/icon96.png',
       '128': 'assets/icon128.png'
     },
+    'background': {
+      'scripts': [
+        'vendor/browser-polyfill.min.js',
+        'background.js'
+      ]
+    },
     'content_scripts': [
       {
         'matches': [
@@ -31,8 +37,9 @@ const generateManifest = () => {
           'vendor/browser-polyfill.min.js',
           'patch-worker.js',
           'content-script.js'
-        ]
-      }, {
+        ],
+        "run_at": "document_start" // run as soon as possible, postpone loading in code
+      }, {                         // allows for early initialization of some things
         'all_frames': true,
         'matches': [
           '*://www.crunchyroll.com/affiliate_iframeplayer*'
@@ -49,7 +56,8 @@ const generateManifest = () => {
       'fonts/*'
     ],
     'permissions': [
-      "<all_urls>",
+      "*://www.crunchyroll.com/*",
+      "*://*.vrv.co/*", // AJAX perms to VRV
       "storage"
     ]
   }, null, 2);

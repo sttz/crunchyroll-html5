@@ -5,11 +5,10 @@ const path = require('path');
 
 module.exports = merge(common, {
   entry: {
-    index: path.join(__dirname, '..', 'src/app/bootstrap.webextension.ts')
+    index: path.join(__dirname, '..', 'src/app/background/index.ts')
   },
-  mode: 'development',
   output: {
-    filename: 'content-script.js',
+    filename: 'background.js',
     path: path.resolve(__dirname, '..', 'dist', 'webextension')
   }
 });
