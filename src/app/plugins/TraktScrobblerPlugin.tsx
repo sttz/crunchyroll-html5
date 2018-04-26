@@ -41,7 +41,7 @@ export default class TraktScrobblerPlugin implements IPlugin {
   private _media?: IMedia;
   private _api?: IPlayerApi;
 
-  private _traktButton: Element;
+  private _connectButton: Element;
   private _statusButton: Element;
   private _state: ScrobbleState = ScrobbleState.Idle;
   private _error?: string;
@@ -126,9 +126,9 @@ export default class TraktScrobblerPlugin implements IPlugin {
           this._client.authenticate();
         }
       };
-      this._traktButton = render(
+      this._connectButton = render(
         (<div class="footer-column">
-          <div id="trakt-button" onClick={ onclick }>
+          <div class="trakt-connect-button" onClick={ onclick }>
             <div class="trakt-icon"></div>
             <div class="text"></div>
           </div>
@@ -140,8 +140,8 @@ export default class TraktScrobblerPlugin implements IPlugin {
   }
 
   private _updateButton(): void {
-    if (!this._traktButton) return;
-    this._traktButton.getElementsByClassName('text')[0].textContent = !this._client.isAuthenticated() ? 'Connect with Trakt' : 'Disconnect from Trakt';
+    if (!this._connectButton) return;
+    this._connectButton.getElementsByClassName('text')[0].textContent = !this._client.isAuthenticated() ? 'Connect with Trakt' : 'Disconnect from Trakt';
   }
 
   private _updateStatusButton(): void {

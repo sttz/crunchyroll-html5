@@ -25,28 +25,26 @@
   }
 }
 
-.html5-video-chrome-trakt {
-  position: absolute;
-  top: 20px;
-  right: 20px;
+.trakt-connect-button {
+  background-color: black;
+  border: 1px solid #222;
+  border-radius: 5px;
+  padding: 2px 7px;
+  color: white;
+  font-size: 11px;
   display: flex;
   flex-direction: row;
   justify-content: center;
   align-items: center;
-  background: rgba(0,0,0,.5);
-  padding: 10px 15px;
-  border-radius: 30px;
+  cursor: pointer;
+
+  &:hover {
+    background-color: #444;
+  }
 
   .trakt-icon {
     height: 14px;
     width: 14px;
     margin-right: 5px;
   }
-}
-
-.html5-video-player--autohide .html5-video-chrome-trakt {
-  opacity: 0;
-  -moz-transition: opacity .1s cubic-bezier(0.4,0.0,1,1);
-  -webkit-transition: opacity .1s cubic-bezier(0.4,0.0,1,1);
-  transition: opacity .1s cubic-bezier(0.4,0.0,1,1);
 }
