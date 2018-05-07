@@ -373,6 +373,8 @@ export default class TraktScrobblerPlugin implements IPlugin {
       throw new Error('trakt scrobbler: Scrobble data not set.');
     }
 
+    this._data.progress = this._getProgress(this._api!);
+
     let action;
     if (playbackState === PlaybackState.PAUSED) {
       if (this.scrobbleState !== ScrobbleState.Paused)
