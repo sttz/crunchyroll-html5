@@ -7,7 +7,7 @@ import { EventHandler } from "../libs/events/EventHandler";
 import { IPlayerApi, PlaybackState, PlaybackStateChangeEvent } from "../media/player/IPlayerApi";
 import { importCSS } from '../utils/css';
 import { IPlugin } from "./IPlugin";
-import TraktApi, { AuthenticationChangeEvent, ITraktApiOptions, ITraktScrobbleData, ITraktError, ITraktMovie, ITraktShow } from './TraktApi';
+import TraktApi, { AuthenticationChangeEvent, ITraktApiOptions, ITraktScrobbleData, ITraktError, ITraktMovie, ITraktShow, ITraktEpisode } from './TraktApi';
 import { IResponse } from "crunchyroll-lib/models/http/IResponse";
 
 const packageInfo = require('../../../package.json');
@@ -262,6 +262,72 @@ export default class TraktScrobblerPlugin implements IPlugin {
     }
   }
 
+  private async _lookupAbsoluteEpisodeNumber(showId: number, season: number, episode: number): Promise<ITraktEpisode | ScrobbleState> {
+    const seasonResponse = await this._client.season(showId, season, true);
+    if (TraktApi.isError(seasonResponse)) {
+      if (seasonResponse.status === 404) {
+        console.error('trakt scrobbler: manual lookup could not find season');
+        return ScrobbleState.NotFound;
+      } else {
+        this._handleApiError(seasonResponse);
+        return ScrobbleState.Error;
+      }
+    }
+
+    let numberMatch = seasonResponse.filter(e => e.number === episode);
+    if (numberMatch.length > 1) {
+      console.error(`trakt scrobbler: got multiple episode #${episode} in season`, seasonResponse);
+      return ScrobbleState.NotFound;
+    } else if (numberMatch.length === 1) {
+      // Found episode!
+      return numberMatch[0];
+    } else {
+      numberMatch = seasonResponse.filter(e => e.number_abs === episode);
+      if (numberMatch.length > 1) {
+        console.error(`trakt scrobbler: got multiple episode #${episode} (abs) in season`, seasonResponse);
+        return ScrobbleState.NotFound;
+      } else if (numberMatch.length === 1) {
+        // Found episode!
+        return numberMatch[0];
+      } else {
+        console.error(`trakt scrobbler: episode #${episode} not found in season`, seasonResponse);
+        return ScrobbleState.NotFound;
+      }
+    }
+  }
+
+  private _filterEpisodeTitle(title: string): string {
+    return title.replace(/[^\w\s]/gi, '').toLowerCase();
+  }
+
+  private async _lookupEpisodeTitle(showId: number, title: string): Promise<ITraktEpisode | ScrobbleState> {
+    const seasonResponse = await this._client.seasons(showId, true);
+    if (TraktApi.isError(seasonResponse)) {
+      if (seasonResponse.status === 404) {
+        console.error('trakt scrobbler: manual lookup could not find seasons');
+        return ScrobbleState.NotFound;
+      } else {
+        this._handleApiError(seasonResponse);
+        return ScrobbleState.Error;
+      }
+    }
+
+    const filteredTitle = this._filterEpisodeTitle(title);
+    let numberMatch = seasonResponse
+      .reduce((acc, s) => acc.concat(s.episodes!), new Array<ITraktEpisode>())
+      .filter(e => this._filterEpisodeTitle(e.title!) === filteredTitle);
+    if (numberMatch.length === 1) {
+      // Found episode!
+      return numberMatch[0];
+    } else if (numberMatch.length > 1) {
+      console.error(`trakt scrobbler: got multiple episodes titled "${title}" in show`, seasonResponse);
+      return ScrobbleState.NotFound;
+    } else {
+      console.error(`trakt scrobbler: episode titled "${title}" not found in show`, seasonResponse);
+      return ScrobbleState.NotFound;
+    }
+  }
+
   private async _startScrobble(playbackState: PlaybackState): Promise<void> {
     if (playbackState !== PlaybackState.PLAYING)
       return;
@@ -270,6 +336,7 @@ export default class TraktScrobblerPlugin implements IPlugin {
 
     // Try to do automatic episode matching
     this._data = this._getScrobbleData(this._media!, this._api!);
+    console.log('data 1', this._data);
     let scrobbleResponse = await this._client.scrobble('start', this._data);
     if (!TraktApi.isError(scrobbleResponse)) {
       this.scrobbleState = ScrobbleState.Started;
@@ -302,13 +369,17 @@ export default class TraktScrobblerPlugin implements IPlugin {
     }
 
     let continueWith: ITraktMovie | ITraktShow | undefined;
-    const perfectMatches = searchResponse.filter(r => r.score === 1000);
-    if (perfectMatches.length === 1) {
-      continueWith = perfectMatches[0].movie || perfectMatches[0].show;
+    if (searchResponse.length === 1) {
+      continueWith = searchResponse[0].movie || searchResponse[0].show;
     } else {
-      console.error('trakt scrobbler: manual lookup produced ambiguous result', searchResponse);
-      this.scrobbleState = ScrobbleState.NotFound;
-      return;
+      const perfectMatches = searchResponse.filter(r => r.score === 1000);
+      if (perfectMatches.length === 1) {
+        continueWith = perfectMatches[0].movie || perfectMatches[0].show;
+      } else {
+        console.error('trakt scrobbler: manual lookup produced ambiguous result', searchResponse);
+        this.scrobbleState = ScrobbleState.NotFound;
+        return;
+      }
     }
 
     if (type === 'movie') {
@@ -318,41 +389,34 @@ export default class TraktScrobblerPlugin implements IPlugin {
       // Found show, now searching episode...
       this._data.show = continueWith as ITraktShow;
 
-      const showId = this._data.show!.ids!.trakt!;
-      const seasonResponse = await this._client.season(showId, this._data.episode!.season!, true);
-      if (TraktApi.isError(seasonResponse)) {
-        if (seasonResponse.status === 404) {
-          console.error('trakt scrobbler: manual lookup could not find season');
-          this.scrobbleState = ScrobbleState.NotFound;
+      if (this._data.episode!.season! > 1) {
+        const episodeOrState = await this._lookupAbsoluteEpisodeNumber(this._data.show!.ids!.trakt!, this._data.episode!.season!, this._data.episode!.number!);
+        if (typeof episodeOrState === 'number') {
+          if (episodeOrState == ScrobbleState.Error) {
+            this._state = episodeOrState;
+            return;
+          }
         } else {
-          this._handleApiError(seasonResponse);
+          this._data.episode = episodeOrState;
         }
-        return;
       }
 
-      const episodeNumber = this._data.episode!.number!;
-      let numberMatch = seasonResponse.filter(e => e.number === episodeNumber);
-      if (numberMatch.length > 1) {
-        console.error(`trakt scrobbler: got multiple episode #${episodeNumber} in season`, seasonResponse);
-        this.scrobbleState = ScrobbleState.Error;
-        return;
-      } else if (numberMatch.length === 1) {
-        // Found episode!
-        this._data.episode = numberMatch[0];
-      } else {
-        numberMatch = seasonResponse.filter(e => e.number_abs === episodeNumber);
-        if (numberMatch.length > 1) {
-          console.error(`trakt scrobbler: got multiple episode #${episodeNumber} (abs) in season`, seasonResponse);
-          this.scrobbleState = ScrobbleState.Error;
-          return;
-        } else if (numberMatch.length === 1) {
-          // Found episode!
-          this._data.episode = numberMatch[0];
+      if (!this._data.episode!.ids) {
+        const episodeOrState = await this._lookupEpisodeTitle(this._data.show!.ids!.trakt!, this._data.episode!.title!);
+        if (typeof episodeOrState === 'number') {
+          if (episodeOrState == ScrobbleState.Error) {
+            this._state = episodeOrState;
+            return;
+          }
         } else {
-          console.error(`trakt scrobbler: episode not found in season`, seasonResponse);
-          this.scrobbleState = ScrobbleState.NotFound;
-          return;
+          this._data.episode = episodeOrState;
         }
+      }
+
+      if (!this._data.episode!.ids || !this._data.episode!.ids!.trakt) {
+        // Nothing more to try
+        this._state = ScrobbleState.NotFound;
+        return;
       }
     }
 
