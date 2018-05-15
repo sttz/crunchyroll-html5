@@ -336,7 +336,6 @@ export default class TraktScrobblerPlugin implements IPlugin {
 
     // Try to do automatic episode matching
     this._data = this._getScrobbleData(this._media!, this._api!);
-    console.log('data 1', this._data);
     let scrobbleResponse = await this._client.scrobble('start', this._data);
     if (!TraktApi.isError(scrobbleResponse)) {
       this.scrobbleState = ScrobbleState.Started;
