@@ -190,6 +190,10 @@ export default class TraktScrobblerPlugin implements IPlugin {
     return api.getCurrentTime() / duration * 100;
   }
 
+  private _shouldScrobbleAt(progress: number): boolean {
+    return progress > 80;
+  }
+
   private _getScrobbleData(media: IMedia, api: IPlayerApi): ITraktScrobbleData {
     const data: ITraktScrobbleData = {
       progress: this._getProgress(api),
@@ -440,8 +444,13 @@ export default class TraktScrobblerPlugin implements IPlugin {
 
     let action;
     if (playbackState === PlaybackState.PAUSED) {
-      if (this.scrobbleState !== ScrobbleState.Paused)
-        action = 'pause';
+      if (this.scrobbleState !== ScrobbleState.Paused) {
+        if (this._shouldScrobbleAt(this._data.progress)) {
+          action = 'stop';
+        } else {
+          action = 'pause';
+        }
+      }
     } else if (playbackState === PlaybackState.PLAYING) {
       if (this.scrobbleState !== ScrobbleState.Started)
         action = 'start';
