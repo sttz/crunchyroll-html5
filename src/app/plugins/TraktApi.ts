@@ -143,9 +143,10 @@ export default class TraktApi extends EventTarget {
     this._loadTokens();
   }
 
-  static isError(obj: any): obj is ITraktError {
+  static isError(obj: any, code?: number): obj is ITraktError {
     const err = obj as ITraktError;
-    return err.status !== undefined && err.error !== undefined;
+    return err.status !== undefined && err.error !== undefined
+      && (code === undefined || err.status === code);
   }
 
   // ------ Authentication ------

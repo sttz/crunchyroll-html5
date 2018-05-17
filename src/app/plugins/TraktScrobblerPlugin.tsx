@@ -9,22 +9,13 @@ import { importCSS } from '../utils/css';
 import { IPlugin } from "./IPlugin";
 import TraktApi, { AuthenticationChangeEvent, ITraktApiOptions, ITraktScrobbleData, ITraktError, ITraktMovie, ITraktShow, ITraktEpisode } from './TraktApi';
 import { IResponse } from "crunchyroll-lib/models/http/IResponse";
+import TraktScrobble, { TraktScrobbleStateChangeEvent, TraktScrobbleState } from "./TraktScrobble";
 
 const packageInfo = require('../../../package.json');
 const css = require('./TraktScrobblerPlugin.scss');
 
 const EpisodeRegex = /Episode (\d+)/;
 const SeasonRegex = /Season (\d+)/;
-
-enum ScrobbleState {
-  Idle,
-  Loading,
-  Started,
-  Paused,
-  Scrobbled,
-  NotFound,
-  Error
-}
 
 export interface ITraktOptions extends ITraktApiOptions {
   //
@@ -37,15 +28,13 @@ export default class TraktScrobblerPlugin implements IPlugin {
   private _handler: EventHandler = new EventHandler(this);
 
   private _client: TraktApi;
+  private _scrobble?: TraktScrobble;
 
   private _media?: IMedia;
   private _api?: IPlayerApi;
 
   private _connectButton: Element;
   private _statusButton: Element;
-  private _state: ScrobbleState = ScrobbleState.Idle;
-  private _error?: string;
-  private _data?: ITraktScrobbleData;
 
   constructor(@inject(ITraktOptionsSymbols) options: ITraktOptions) {
     this._client = new TraktApi(options);
@@ -58,15 +47,6 @@ export default class TraktScrobblerPlugin implements IPlugin {
       this._client.checkAuthenticationResult(window.location.href);
     }
     this._updateButton();
-  }
-
-  private get scrobbleState(): ScrobbleState {
-    return this._state;
-  }
-
-  private set scrobbleState(value: ScrobbleState) {
-    this._state = value;
-    this._updateStatusButton();
   }
 
   // ------ IPlugin ------
@@ -83,9 +63,12 @@ export default class TraktScrobblerPlugin implements IPlugin {
     this._media = media;
     this._api = api;
 
+    this._scrobble = new TraktScrobble(this._client, media.getId(), this._getScrobbleData(media, api));
+
     this._handler
-      .listen(api, 'playbackstatechange', this._onPlaybackStateChange, false);
-    
+      .listen(api, 'playbackstatechange', this._onPlaybackStateChange, false)
+      .listen(this._scrobble, 'traktscrobblestatechange', this._onScrobbleStatusChanged, false);
+
     if (this._statusButton == null) {
       let container = document.querySelector('.chrome-controls__right');
       if (container) {
@@ -102,14 +85,15 @@ export default class TraktScrobblerPlugin implements IPlugin {
   }
 
   unload(): void {
+    if (this._scrobble && this._api) {
+      this._scrobble.setPlaybackState(PlaybackState.ENDED, this._getProgress(this._api));
+    }
+
     this._media = undefined;
     this._api = undefined;
+    this._scrobble = undefined;
 
     this._handler.removeAll();
-
-    this.scrobbleState = ScrobbleState.Idle;
-    this._data = undefined;
-    this._error = undefined;
   }
 
   // ------ UI ------
@@ -154,29 +138,31 @@ export default class TraktScrobblerPlugin implements IPlugin {
       if (item.startsWith('state-')) toRemove.push(item);
     }
     classList.remove(...toRemove);
-    classList.add('state-' + ScrobbleState[this.scrobbleState].toLowerCase());
 
-    this._statusButton.setAttribute('title', this._error || ScrobbleState[this.scrobbleState]);
+    if (!this._scrobble) {
+      classList.add('state-error');
+      this._statusButton.setAttribute('title', 'No scrobbler instance');
+    } else {
+      classList.add('state-' + TraktScrobbleState[this._scrobble.state].toLowerCase());
+      this._statusButton.setAttribute('title', this._scrobble.error || TraktScrobbleState[this._scrobble.state]);
+    }
+  }
+
+  private _onScrobbleStatusChanged(e: TraktScrobbleStateChangeEvent): void {
+    this._updateStatusButton();
   }
 
   private _onStatusButtonClick(): void {
-    if (!this._data) return;
-
-    let url = 'https://trakt.tv/';
-    if (this._data.movie !== undefined) {
-      url += `movies/${this._data.movie.ids!.slug}`;
-    } else if (this._data.show !== undefined && this._data.episode !== undefined) {
-      const show = this._data.show;
-      const episode = this._data.episode;
-      url += `shows/${show.ids!.slug}/seasons/${episode.season}/episodes/${episode.number}`;
-    } else {
-      return;
-    }
-
-    window.open(url, '_blank');
+    if (!this._scrobble) return;
+    window.open(this._scrobble.scrobbleUrl(), '_blank');
   }
 
   // ------ Scrobbling ------
+
+  private async _onPlaybackStateChange(e: PlaybackStateChangeEvent): Promise<void> {
+    if (!this._scrobble || !this._api) return;
+    this._scrobble.setPlaybackState(e.state, this._getProgress(this._api));
+  }
 
   private _isMovie(metadata: IMediaMetadata): boolean {
     return metadata.getEpisodeTitle().toLowerCase().includes('movie');
@@ -188,10 +174,6 @@ export default class TraktScrobblerPlugin implements IPlugin {
       return 0;
     
     return api.getCurrentTime() / duration * 100;
-  }
-
-  private _shouldScrobbleAt(progress: number): boolean {
-    return progress > 80;
   }
 
   private _getScrobbleData(media: IMedia, api: IPlayerApi): ITraktScrobbleData {
@@ -240,245 +222,6 @@ export default class TraktScrobblerPlugin implements IPlugin {
     }
 
     return data;
-  }
-
-  private async _onPlaybackStateChange(e: PlaybackStateChangeEvent): Promise<void> {
-    this._scrobble(e.state);
-  }
-
-  private _handleApiError(response: ITraktError): void {
-    console.error(`trakt scrobbler: ${response.error}`);
-    this._error = response.error;
-    this.scrobbleState = ScrobbleState.Error;
-  }
-
-  private async _scrobble(playbackState: PlaybackState): Promise<void> {
-    if (this.scrobbleState === ScrobbleState.Error 
-        || this.scrobbleState === ScrobbleState.NotFound
-        || this.scrobbleState === ScrobbleState.Scrobbled
-        || this.scrobbleState === ScrobbleState.Loading)
-      return;
-
-    if (this.scrobbleState === ScrobbleState.Idle) {
-      await this._startScrobble(playbackState);
-    } else {
-      await this._updateScrobble(playbackState);
-    }
-  }
-
-  private async _lookupAbsoluteEpisodeNumber(showId: number, season: number, episode: number): Promise<ITraktEpisode | ScrobbleState> {
-    const seasonResponse = await this._client.season(showId, season, true);
-    if (TraktApi.isError(seasonResponse)) {
-      if (seasonResponse.status === 404) {
-        console.error('trakt scrobbler: manual lookup could not find season');
-        return ScrobbleState.NotFound;
-      } else {
-        this._handleApiError(seasonResponse);
-        return ScrobbleState.Error;
-      }
-    }
-
-    let numberMatch = seasonResponse.filter(e => e.number === episode);
-    if (numberMatch.length > 1) {
-      console.error(`trakt scrobbler: got multiple episode #${episode} in season`, seasonResponse);
-      return ScrobbleState.NotFound;
-    } else if (numberMatch.length === 1) {
-      // Found episode!
-      return numberMatch[0];
-    } else {
-      numberMatch = seasonResponse.filter(e => e.number_abs === episode);
-      if (numberMatch.length > 1) {
-        console.error(`trakt scrobbler: got multiple episode #${episode} (abs) in season`, seasonResponse);
-        return ScrobbleState.NotFound;
-      } else if (numberMatch.length === 1) {
-        // Found episode!
-        return numberMatch[0];
-      } else {
-        console.error(`trakt scrobbler: episode #${episode} not found in season`, seasonResponse);
-        return ScrobbleState.NotFound;
-      }
-    }
-  }
-
-  private _filterEpisodeTitle(title: string): string {
-    return title.replace(/[^\w\s]/gi, '').toLowerCase();
-  }
-
-  private async _lookupEpisodeTitle(showId: number, title: string): Promise<ITraktEpisode | ScrobbleState> {
-    const seasonResponse = await this._client.seasons(showId, true);
-    if (TraktApi.isError(seasonResponse)) {
-      if (seasonResponse.status === 404) {
-        console.error('trakt scrobbler: manual lookup could not find seasons');
-        return ScrobbleState.NotFound;
-      } else {
-        this._handleApiError(seasonResponse);
-        return ScrobbleState.Error;
-      }
-    }
-
-    const filteredTitle = this._filterEpisodeTitle(title);
-    let numberMatch = seasonResponse
-      .reduce((acc, s) => acc.concat(s.episodes!), new Array<ITraktEpisode>())
-      .filter(e => this._filterEpisodeTitle(e.title!) === filteredTitle);
-    if (numberMatch.length === 1) {
-      // Found episode!
-      return numberMatch[0];
-    } else if (numberMatch.length > 1) {
-      console.error(`trakt scrobbler: got multiple episodes titled "${title}" in show`, seasonResponse);
-      return ScrobbleState.NotFound;
-    } else {
-      console.error(`trakt scrobbler: episode titled "${title}" not found in show`, seasonResponse);
-      return ScrobbleState.NotFound;
-    }
-  }
-
-  private async _startScrobble(playbackState: PlaybackState): Promise<void> {
-    if (playbackState !== PlaybackState.PLAYING)
-      return;
-
-    this.scrobbleState = ScrobbleState.Loading;
-
-    // Try to do automatic episode matching
-    this._data = this._getScrobbleData(this._media!, this._api!);
-    let scrobbleResponse = await this._client.scrobble('start', this._data);
-    if (!TraktApi.isError(scrobbleResponse)) {
-      this.scrobbleState = ScrobbleState.Started;
-      if (scrobbleResponse.movie !== undefined) this._data.movie = scrobbleResponse.movie;
-      if (scrobbleResponse.show !== undefined) this._data.show = scrobbleResponse.show;
-      if (scrobbleResponse.episode !== undefined) this._data.episode = scrobbleResponse.episode;
-      return;
-    } else if (scrobbleResponse.status !== 404) {
-      this._handleApiError(scrobbleResponse);
-      return;
-    }
-
-    // Fall back to a manual lookup
-    let type, title;
-    if (this._data.movie !== undefined) {
-      type = 'movie';
-      title = this._data.movie.title;
-    } else {
-      type = 'show';
-      title = this._data.show!.title;
-    }
-    if (!title) {
-      console.error('trakt scrobbler: No title set');
-      return;
-    }
-    const searchResponse = await this._client.search(type, title);
-    if (TraktApi.isError(searchResponse)) {
-      this._handleApiError(searchResponse);
-      return;
-    }
-
-    let continueWith: ITraktMovie | ITraktShow | undefined;
-    if (searchResponse.length === 1) {
-      continueWith = searchResponse[0].movie || searchResponse[0].show;
-    } else {
-      const perfectMatches = searchResponse.filter(r => r.score === 1000);
-      if (perfectMatches.length === 1) {
-        continueWith = perfectMatches[0].movie || perfectMatches[0].show;
-      } else {
-        console.error('trakt scrobbler: manual lookup produced ambiguous result', searchResponse);
-        this.scrobbleState = ScrobbleState.NotFound;
-        return;
-      }
-    }
-
-    if (type === 'movie') {
-      // Found movie!
-      this._data.movie! = continueWith as ITraktMovie;
-    } else {
-      // Found show, now searching episode...
-      this._data.show = continueWith as ITraktShow;
-
-      if (this._data.episode!.season! > 1) {
-        const episodeOrState = await this._lookupAbsoluteEpisodeNumber(this._data.show!.ids!.trakt!, this._data.episode!.season!, this._data.episode!.number!);
-        if (typeof episodeOrState === 'number') {
-          if (episodeOrState == ScrobbleState.Error) {
-            this._state = episodeOrState;
-            return;
-          }
-        } else {
-          this._data.episode = episodeOrState;
-        }
-      }
-
-      if (!this._data.episode!.ids) {
-        const episodeOrState = await this._lookupEpisodeTitle(this._data.show!.ids!.trakt!, this._data.episode!.title!);
-        if (typeof episodeOrState === 'number') {
-          if (episodeOrState == ScrobbleState.Error) {
-            this._state = episodeOrState;
-            return;
-          }
-        } else {
-          this._data.episode = episodeOrState;
-        }
-      }
-
-      if (!this._data.episode!.ids || !this._data.episode!.ids!.trakt) {
-        // Nothing more to try
-        this._state = ScrobbleState.NotFound;
-        return;
-      }
-    }
-
-    // Retry scrobble
-    scrobbleResponse = await this._client.scrobble('start', this._data);
-    if (!TraktApi.isError(scrobbleResponse)) {
-      this.scrobbleState = ScrobbleState.Started;
-    } else if (scrobbleResponse.status === 404) {
-      console.error(`trakt scrobbler: ${type} not found even with manual lookup`, this._data);
-      this.scrobbleState = ScrobbleState.NotFound;
-    } else {
-      this._handleApiError(scrobbleResponse);
-    }
-  }
-
-  private async _updateScrobble(playbackState: PlaybackState): Promise<void> {
-    if (!this._data) {
-      throw new Error('trakt scrobbler: Scrobble data not set.');
-    }
-
-    this._data.progress = this._getProgress(this._api!);
-
-    let action;
-    if (playbackState === PlaybackState.PAUSED) {
-      if (this.scrobbleState !== ScrobbleState.Paused) {
-        if (this._shouldScrobbleAt(this._data.progress)) {
-          action = 'stop';
-        } else {
-          action = 'pause';
-        }
-      }
-    } else if (playbackState === PlaybackState.PLAYING) {
-      if (this.scrobbleState !== ScrobbleState.Started)
-        action = 'start';
-    } else if (playbackState === PlaybackState.ENDED) {
-      action = 'stop';
-    }
-    if (!action) return;
-
-    const response = await this._client.scrobble(action, this._data);
-    if (TraktApi.isError(response)) {
-      if (response.status === 409) {
-        // Item was just scrobbled
-        this.scrobbleState = ScrobbleState.Scrobbled;
-      } else {
-        this._handleApiError(response);
-      }
-    } else {
-      if (response.action === 'start') {
-        this.scrobbleState = ScrobbleState.Started;
-      } else if (response.action === 'pause') {
-        this.scrobbleState = ScrobbleState.Paused;
-      } else if (response.action === 'scrobble') {
-        this.scrobbleState = ScrobbleState.Scrobbled;
-      } else {
-        console.error(`trakt scrobbler: Unknown scrobble action "${response.action}"`);
-        this.scrobbleState = ScrobbleState.Error;
-      }
-    }
   }
 }
 
