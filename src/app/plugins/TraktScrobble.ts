@@ -175,44 +175,34 @@ export default class TraktScrobble extends EventTarget {
       return LookupResult.Error;
     }
     console.log('trakt scrobbler: trying to search manually...');
-    result = await this._search(type, title);
-    if (result !== LookupResult.Found) return result;
+    const results = await this._search(type, title);
+    if (results === null) return LookupResult.Error;
+    if (results.length === 0) return LookupResult.NotFound;
 
-    // Look up episode for shows
-    if (type === 'show') {
-      if (this._data.episode === undefined || this._data.episode.number === undefined || this._data.episode.season === undefined) {
-        console.error('trakt scrobbler: data has show but episode is not set or incomplete', this._data.episode);
-        return LookupResult.Error;
-      }
-      if (this._data.show === undefined || this._data.show.ids === undefined || this._data.show.ids.trakt === undefined) {
-        console.error('trakt scrobbler: show data is missing trakt id', this._data.show);
-        return LookupResult.Error;
-      }
-
-      let episodeResult = LookupResult.NotFound;
-
-      // Lookup absolute episode numbers
-      if (this._data.episode.season > 1) {
-        console.log('trakt scrobbler: trying to look up absolute episode number...');
-        episodeResult = await this._lookupAbsoluteEpisodeNumber(this._data.show.ids.trakt, this._data.episode.season, this._data.episode.number);
-        if (episodeResult === LookupResult.Error) return episodeResult;
+    // Try search results in order
+    for (const found of results) {
+      if (type === 'movie') {
+        console.log(`trakt scrobbler: trying result ${found.movie!.title}`, found);
+        this._data.movie = found.movie;
+      } else {
+        console.log(`trakt scrobbler: trying result ${found.show!.title}`, found);
+        this._data.show = found.show;
       }
 
-      // Or lookup by episode title
-      if (episodeResult === LookupResult.NotFound && this._data.episode.title !== undefined) {
-        console.log('trakt scrobbler: trying to look up episode title...');
-        episodeResult = await this._lookupEpisodeTitle(this._data.show.ids.trakt, this._data.episode.title);
-        if (episodeResult === LookupResult.Error) return episodeResult;
+      // Look up episode for shows
+      if (type === 'show') {
+        result = await this._lookupEpisode(found.show!);
+        if (result === LookupResult.Error) return result;
+        if (result === LookupResult.NotFound) continue;
       }
 
-      if (episodeResult === LookupResult.NotFound) {
-        return episodeResult;
-      }
+      // Retry start with new data
+      console.log('trakt scrobbler: re-trying matching');
+      result = await this._scrobbleLookup();
+      if (result === LookupResult.Error) return result;
+      if (result === LookupResult.NotFound) continue;
     }
 
-    // Retry start with new data
-    console.log('trakt scrobbler: re-trying matching');
-    result = await this._scrobbleLookup();
     return result;
   }
 
@@ -224,12 +214,6 @@ export default class TraktScrobble extends EventTarget {
       return LookupResult.Error;
     }
 
-    if (this._data.episode && this._data.episode.title) {
-      if (this._filterEpisodeTitle(scrobbleResponse.episode!.title!) !== this._filterEpisodeTitle(this._data.episode.title)) {
-        return LookupResult.NotFound;
-      }
-    }
-
     if (scrobbleResponse.movie !== undefined)   this._data.movie = scrobbleResponse.movie;
     if (scrobbleResponse.show !== undefined)    this._data.show = scrobbleResponse.show;
     if (scrobbleResponse.episode !== undefined) this._data.episode = scrobbleResponse.episode;
@@ -238,44 +222,50 @@ export default class TraktScrobble extends EventTarget {
     return LookupResult.Found;
   }
 
-  private async _search(type: 'movie' | 'show', title: string): Promise<LookupResult> {
+  private async _search(type: 'movie' | 'show', title: string): Promise<Array<ITraktSearchResult> | null> {
     const searchResponse = await this._client.search(type, title);
     if (this._handleError(searchResponse)) {
-      return LookupResult.Error;
-    } else if (searchResponse.length == 0) {
-      return LookupResult.NotFound;
+      return null;
     }
 
-    let result: ITraktSearchResult | undefined;
-    if (searchResponse.length === 1) {
-      if (searchResponse[0].score < 0) {
-        console.log(`trakt scrobbler: only search result has scroe < 0 and is probably garbage`, searchResponse[0]);
-        return LookupResult.NotFound;
-      }
-      result = searchResponse[0];
-    } else {
-      const perfectMatches = searchResponse.filter(r => r.score === 1000);
-      if (perfectMatches.length === 1) {
-        result = perfectMatches[0];
+    const goodMatches = searchResponse.filter(r => r.score > 20);
+    if (searchResponse.length > goodMatches.length) {
+      if (goodMatches.length === 0) {
+        console.log(`trakt scrobbler: search returned only garbage results.`);
       } else {
-        const goodMatches = searchResponse.filter(r => r.score > 500);
-        if (goodMatches.length === 1) {
-          result = goodMatches[0];
-        }
+        console.log(`trakt scrobbler: some search results with low scores ignored`);
       }
     }
+    return goodMatches;
+  }
 
-    if (!result) {
-      return LookupResult.NotFound;
+  private async _lookupEpisode(show: ITraktShow): Promise<LookupResult> {
+    if (this._data.episode === undefined || this._data.episode.number === undefined || this._data.episode.season === undefined) {
+      console.error('trakt scrobbler: data has show but episode is not set or incomplete', this._data.episode);
+      return LookupResult.Error;
+    }
+    if (show.ids === undefined || show.ids.trakt === undefined) {
+      console.error('trakt scrobbler: show data is missing trakt id', this._data.show);
+      return LookupResult.Error;
     }
 
-    console.log(`trakt scrobbler: found show or movie using manual search`, result);
-    if (type === 'movie') {
-      this._data.movie = result.movie as ITraktMovie;
-    } else {
-      this._data.show = result.show as ITraktShow;
+    let episodeResult = LookupResult.NotFound;
+
+    // Lookup absolute episode numbers
+    if (this._data.episode.season > 1) {
+      console.log('trakt scrobbler: trying to look up absolute episode number...');
+      episodeResult = await this._lookupAbsoluteEpisodeNumber(show.ids.trakt, this._data.episode.season, this._data.episode.number);
+      if (episodeResult === LookupResult.Error) return episodeResult;
     }
-    return LookupResult.Found;
+
+    // Or lookup by episode title
+    if (episodeResult === LookupResult.NotFound && this._data.episode.title !== undefined) {
+      console.log('trakt scrobbler: trying to look up episode title...');
+      episodeResult = await this._lookupEpisodeTitle(show.ids.trakt, this._data.episode.title);
+      if (episodeResult === LookupResult.Error) return episodeResult;
+    }
+
+    return episodeResult;
   }
 
   private async _lookupAbsoluteEpisodeNumber(showId: number, season: number, episode: number): Promise<LookupResult> {
@@ -302,6 +292,7 @@ export default class TraktScrobble extends EventTarget {
   }
 
   private _filterEpisodeTitle(title: string): string {
+    if (!title) debugger;
     return title.replace(/[^\w\s]/gi, '').toLowerCase();
   }
 
@@ -317,7 +308,7 @@ export default class TraktScrobble extends EventTarget {
     const filteredTitle = this._filterEpisodeTitle(title);
     let numberMatch = seasonResponse
       .reduce((acc, s) => acc.concat(s.episodes!), new Array<ITraktEpisode>())
-      .filter(e => this._filterEpisodeTitle(e.title!) === filteredTitle);
+      .filter(e => e.title && this._filterEpisodeTitle(e.title) === filteredTitle);
     if (numberMatch.length > 1) {
       console.error(`trakt scrobbler: got multiple episodes titled "${title}" in show`, seasonResponse);
       return LookupResult.NotFound;
