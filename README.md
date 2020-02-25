@@ -32,7 +32,7 @@ file and the
 file. I've also implemented a way to change the subtitle track without needing
 to restart the WebWorker that's running the engine.
 
-_All modifcations can be found [here](https://github.com/YePpHa/JavascriptSubtitlesOctopus)._
+_All modifications can be found [here](https://github.com/YePpHa/JavascriptSubtitlesOctopus)._
 
 ## Build
 Building this project will result in a `crunchyroll-html5.user.js` file in the
