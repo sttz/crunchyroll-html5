@@ -84,7 +84,7 @@ $ yarn sign:webextension --key <API KEY> --secret <API SECRET> --id <ID>
   - Local
     - Tracking episodes watched
     - Tracking what you've watched in a video.
-    - Resume videoes that you haven't completely watched yet.
+    - Resume videos that you haven't completely watched yet.
   - ...
 - Add option to change subtitles to other languages. Currently, only the default
   subtitle is displayed (in most cases this will be English).
