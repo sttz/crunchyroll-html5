@@ -32,7 +32,7 @@ file and the
 file. I've also implemented a way to change the subtitle track without needing
 to restart the WebWorker that's running the engine.
 
-_All modifcations can be found [here](https://github.com/YePpHa/JavascriptSubtitlesOctopus)._
+_All modifications can be found [here](https://github.com/YePpHa/JavascriptSubtitlesOctopus)._
 
 ## Build
 Building this project will result in a `crunchyroll-html5.user.js` file in the
@@ -84,7 +84,7 @@ $ yarn sign:webextension --key <API KEY> --secret <API SECRET> --id <ID>
   - Local
     - Tracking episodes watched
     - Tracking what you've watched in a video.
-    - Resume videoes that you haven't completely watched yet.
+    - Resume videos that you haven't completely watched yet.
   - ...
 - Add option to change subtitles to other languages. Currently, only the default
   subtitle is displayed (in most cases this will be English).
